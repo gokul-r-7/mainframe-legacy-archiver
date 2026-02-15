@@ -2,7 +2,7 @@
 
 A modern, cloud-native solution for migrating, archiving, and analyzing historical mainframe data. This platform provides a secure, scalable, and user-friendly interface to move legacy CSV/Excel/Parquet data into a queryable Data Lake on AWS.
 
-## 📖 For Non-Technical Users: How It Works
+## 📖 How It Works
 
 Imagine you have a dusty library full of old filing cabinets (your mainframe data). You want to move all those files into a modern, searchable digital cloud storage, but you need to make sure nothing gets lost or corrupted along the way.
 
