@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  frontend:
+    build:
+      context: ./front_end
+      dockerfile: Dockerfile
+      args:
+        VITE_API_ENDPOINT: "http://localhost:3001"
+        VITE_COGNITO_USER_POOL_ID: "${COGNITO_USER_POOL_ID:-local}"
+        VITE_COGNITO_CLIENT_ID: "${COGNITO_CLIENT_ID:-local}"
+        VITE_AWS_REGION: "${AWS_REGION:-us-east-1}"
+    ports:
+      - "3000:80"
+    depends_on:
+      - localstack
+    environment:
+      - NODE_ENV=development
+    restart: unless-stopped
+
+  localstack:
+    image: localstack/localstack:3.0
+    ports:
+      - "4566:4566"
+      - "4510-4559:4510-4559"
+    environment:
+      - SERVICES=s3,dynamodb,lambda,stepfunctions,sns,ses,secretsmanager
+      - DEBUG=0
+      - DATA_DIR=/var/lib/localstack/data
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  localstack_data:

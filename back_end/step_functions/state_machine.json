@@ -1,0 +1,194 @@
+{
+  "Comment": "Data Archival Pipeline - Orchestrates file validation, Glue ETL, crawling, metadata logging, and notification",
+  "StartAt": "ValidateSource",
+  "States": {
+    "ValidateSource": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ValidationFunctionArn}",
+        "Payload": {
+          "action": "validate_source",
+          "job_id.$": "$.job_id",
+          "s3_key.$": "$.s3_key",
+          "file_type.$": "$.file_type",
+          "database.$": "$.database",
+          "table.$": "$.table",
+          "load_type.$": "$.load_type",
+          "email.$": "$.email"
+        }
+      },
+      "ResultPath": "$.validation_result",
+      "ResultSelector": {
+        "source_row_count.$": "$.Payload.source_row_count",
+        "source_schema.$": "$.Payload.source_schema",
+        "source_checksum.$": "$.Payload.source_checksum",
+        "status.$": "$.Payload.status"
+      },
+      "Next": "RunGlueETL",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "LogFailure"
+        }
+      ]
+    },
+    "RunGlueETL": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${GlueJobName}",
+        "Arguments": {
+          "--JOB_ID.$": "$.job_id",
+          "--S3_KEY.$": "$.s3_key",
+          "--FILE_TYPE.$": "$.file_type",
+          "--DATABASE.$": "$.database",
+          "--TABLE.$": "$.table",
+          "--LOAD_TYPE.$": "$.load_type"
+        }
+      },
+      "ResultPath": "$.glue_result",
+      "Next": "StartCrawler",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "LogFailure"
+        }
+      ]
+    },
+    "StartCrawler": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:glue:startCrawler",
+      "Parameters": {
+        "Name": "${CrawlerName}"
+      },
+      "ResultPath": "$.crawler_result",
+      "Next": "WaitForCrawler",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "ValidateTarget"
+        }
+      ]
+    },
+    "WaitForCrawler": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "CheckCrawlerStatus"
+    },
+    "CheckCrawlerStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:glue:getCrawler",
+      "Parameters": {
+        "Name": "${CrawlerName}"
+      },
+      "ResultPath": "$.crawler_status",
+      "Next": "IsCrawlerDone"
+    },
+    "IsCrawlerDone": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.crawler_status.Crawler.State",
+          "StringEquals": "READY",
+          "Next": "ValidateTarget"
+        }
+      ],
+      "Default": "WaitForCrawler"
+    },
+    "ValidateTarget": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ValidationFunctionArn}",
+        "Payload": {
+          "action": "validate_target",
+          "job_id.$": "$.job_id",
+          "database.$": "$.database",
+          "table.$": "$.table",
+          "source_row_count.$": "$.validation_result.source_row_count",
+          "source_schema.$": "$.validation_result.source_schema",
+          "source_checksum.$": "$.validation_result.source_checksum",
+          "load_type.$": "$.load_type"
+        }
+      },
+      "ResultPath": "$.target_validation",
+      "ResultSelector": {
+        "target_row_count.$": "$.Payload.target_row_count",
+        "schema_match.$": "$.Payload.schema_match",
+        "checksum_match.$": "$.Payload.checksum_match",
+        "validation_status.$": "$.Payload.validation_status"
+      },
+      "Next": "LogSuccess",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "LogFailure"
+        }
+      ]
+    },
+    "LogSuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${MetadataLoggerFunctionArn}",
+        "Payload": {
+          "action": "log_success",
+          "job_id.$": "$.job_id",
+          "database.$": "$.database",
+          "table.$": "$.table",
+          "email.$": "$.email",
+          "file_name.$": "$.s3_key",
+          "start_time.$": "$.start_time",
+          "validation_result.$": "$.target_validation",
+          "source_row_count.$": "$.validation_result.source_row_count"
+        }
+      },
+      "ResultPath": "$.log_result",
+      "Next": "NotifySuccess"
+    },
+    "NotifySuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${SNSTopicArn}",
+        "Subject": "Data Archival Completed Successfully",
+        "Message.$": "States.Format('Job {} completed successfully. Database: {}, Table: {}, Rows: {}', $.job_id, $.database, $.table, $.validation_result.source_row_count)"
+      },
+      "End": true
+    },
+    "LogFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${MetadataLoggerFunctionArn}",
+        "Payload": {
+          "action": "log_failure",
+          "job_id.$": "$.job_id",
+          "database.$": "$.database",
+          "table.$": "$.table",
+          "email.$": "$.email",
+          "file_name.$": "$.s3_key",
+          "start_time.$": "$.start_time",
+          "error.$": "$.error"
+        }
+      },
+      "ResultPath": "$.log_result",
+      "Next": "NotifyFailure"
+    },
+    "NotifyFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${SNSTopicArn}",
+        "Subject": "Data Archival FAILED",
+        "Message.$": "States.Format('Job {} FAILED. Database: {}, Table: {}. Check logs for details.', $.job_id, $.database, $.table)"
+      },
+      "End": true
+    }
+  }
+}
